@@ -1,2 +1,6 @@
 pkg/
 *-handin.tar.gz
+mr-tmp-*
+mr-out-*
+*.so
+*.test
