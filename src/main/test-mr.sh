@@ -110,6 +110,8 @@ else
   failed_any=1
 fi
 
+# exit 1
+
 # wait for remaining workers and coordinator to exit.
 wait
 
