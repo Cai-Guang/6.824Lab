@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"6.5840/kvsrv1"
+	kvsrv "6.5840/kvsrv1"
 	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
+	kvtest "6.5840/kvtest1"
 )
 
 const (
@@ -27,6 +27,8 @@ func oneClient(t *testing.T, me int, ck kvtest.IKVClerk, done chan struct{}) kvt
 			return kvtest.ClntRes{i, 0}
 		default:
 			lk.Acquire()
+
+			defer lk.Release()
 
 			// log.Printf("%d: acquired lock", me)
 
@@ -53,8 +55,6 @@ func oneClient(t *testing.T, me int, ck kvtest.IKVClerk, done chan struct{}) kvt
 			}
 
 			// log.Printf("%d: release lock", me)
-
-			lk.Release()
 		}
 	}
 	return kvtest.ClntRes{}
