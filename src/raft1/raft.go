@@ -24,7 +24,7 @@ const (
 	electionTimeoutMax      time.Duration = 500 * time.Millisecond
 	electionTimeoutInterval int64         = int64(electionTimeoutMax - electionTimeoutMin)
 
-	replicationInterval time.Duration = 200 * time.Millisecond
+	replicationInterval time.Duration = 100 * time.Millisecond
 )
 
 func (rf *Raft) resetElectionTimerLocked() {
@@ -32,8 +32,8 @@ func (rf *Raft) resetElectionTimerLocked() {
 	rf.electionTimeout = electionTimeoutMin + time.Duration(rand.Int63n(electionTimeoutInterval))
 }
 
-func (rf *Raft) isElectionTimeout() bool {
-	return time.Now().Sub(rf.electionStart) >= rf.electionTimeout
+func (rf *Raft) isElectionTimeoutLocked() bool {
+	return time.Since(rf.electionStart) >= rf.electionTimeout
 }
 
 type Role string
@@ -107,6 +107,8 @@ func (rf *Raft) becomeLeaderLocked() {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	var term int
 	var isleader bool
 	// Your code here (3A).
@@ -373,11 +375,11 @@ func (rf *Raft) startReplication(term int) bool {
 
 func (rf *Raft) replicationTicker(term int) {
 	for rf.killed() == false {
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
+		// rf.mu.Lock()
 
 		ok := rf.startReplication(term)
 
+		// rf.mu.Unlock()
 		if !ok {
 			break
 		}
@@ -386,10 +388,8 @@ func (rf *Raft) replicationTicker(term int) {
 	}
 }
 
-func (rf *Raft) startElection(term int) {
-	vote := 0
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+func (rf *Raft) startElection(term int) bool {
+	vote := 1
 
 	askVoteFromPeer := func(peer int, args *RequestVoteArgs) {
 		reply := &RequestVoteReply{}
@@ -399,6 +399,7 @@ func (rf *Raft) startElection(term int) {
 
 		if !ok {
 			LOG(rf.me, rf.currentTerm, DError, "failed to send request vote to peer %d", peer)
+			return
 		}
 
 		if reply.Term > rf.currentTerm {
@@ -421,25 +422,31 @@ func (rf *Raft) startElection(term int) {
 		}
 	}
 
+	rf.mu.Lock()
 	if rf.contextLostLocked(Candidate, term) {
+		rf.mu.Unlock()
 		LOG(rf.me, rf.currentTerm, DVote, "context lost, candidate %d, term %d", rf.me, term)
+		return false
 	}
+	rf.mu.Unlock()
 
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
-			vote++
 			continue
 		}
 
 		args := &RequestVoteArgs{
-			Term:        rf.currentTerm,
+			Term:        term,
 			CandidateId: rf.me,
 		}
 
 		go askVoteFromPeer(peer, args)
 	}
 
-	rf.currentTerm = term
+	// rf.mu.Lock()
+	// rf.currentTerm = term
+	// rf.mu.Unlock()
+	return true
 }
 
 func (rf *Raft) electionTicker() {
@@ -449,9 +456,9 @@ func (rf *Raft) electionTicker() {
 		// Check if a leader election should be started.
 		rf.mu.Lock()
 
-		if rf.role != Leader && rf.isElectionTimeout() {
+		if rf.role != Leader && rf.isElectionTimeoutLocked() {
 			rf.becomeCandidateLocked()
-			go rf.startElection(rf.currentTerm + 1)
+			go rf.startElection(rf.currentTerm)
 		}
 
 		rf.mu.Unlock()
