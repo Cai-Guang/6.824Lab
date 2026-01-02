@@ -20,26 +20,28 @@ import (
 )
 
 const (
-	electionTimeoutMin       time.Duration = 250 * time.Millisecond
-	electionTimeoutMax       time.Duration = 500 * time.Millisecond
-	electionTimeoutRandRange int64         = int64(electionTimeoutMax - electionTimeoutMin)
+	electionTimeoutMin      time.Duration = 250 * time.Millisecond
+	electionTimeoutMax      time.Duration = 500 * time.Millisecond
+	electionTimeoutInterval int64         = int64(electionTimeoutMax - electionTimeoutMin)
+
+	replicationInterval time.Duration = 200 * time.Millisecond
 )
 
 func (rf *Raft) resetElectionTimerLocked() {
 	rf.electionStart = time.Now()
-	rf.electionTimeout = electionTimeoutMin + time.Duration(rand.Int63n(electionTimeoutRandRange))
+	rf.electionTimeout = electionTimeoutMin + time.Duration(rand.Int63n(electionTimeoutInterval))
 }
 
 func (rf *Raft) isElectionTimeout() bool {
 	return time.Now().Sub(rf.electionStart) >= rf.electionTimeout
 }
 
-type Role int32
+type Role string
 
 const (
-	Follower Role = iota
-	Candidate
-	Leader
+	Follower  Role = "Follower"
+	Candidate Role = "Candidate"
+	Leader    Role = "Leader"
 )
 
 // A Go object implementing a single Raft peer.
@@ -77,29 +79,41 @@ func (rf *Raft) becomeFollowerLocked(term int) {
 	rf.currentTerm = term
 }
 
-func (rf *Raft) becomeCandidateLocked(term int) {
+func (rf *Raft) becomeCandidateLocked() {
 	if rf.role == Leader {
 		LOG(rf.me, rf.currentTerm, DError, "Leader can't become candidate, already leader")
 		return
 	}
 
-	LOG(rf.me, rf.currentTerm, DLog, "%s became candidate, T:%d->T%d", rf.role, rf.currentTerm, term)
+	LOG(rf.me, rf.currentTerm, DLog, "%s became candidate, T:%d->T%d", rf.role, rf.currentTerm, rf.currentTerm)
 
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.role = Candidate
 }
 
-func (rf *Raft) becomeLeaderLocked(term int) {
+func (rf *Raft) becomeLeaderLocked() {
 	if rf.role != Candidate {
 		LOG(rf.me, rf.currentTerm, DError, "only candidate can become leader")
 		return
 	}
 
-	LOG(rf.me, rf.currentTerm, DLog, "%s became leader, T:%d->T%d", rf.role, rf.currentTerm, term)
+	LOG(rf.me, rf.currentTerm, DLog, "%s became leader, T:%d->T%d", rf.role, rf.currentTerm, rf.currentTerm)
 
 	rf.role = Leader
-	rf.currentTerm = term
+}
+
+// return currentTerm and whether this server
+// believes it is the leader.
+func (rf *Raft) GetState() (int, bool) {
+
+	var term int
+	var isleader bool
+	// Your code here (3A).
+
+	term = rf.currentTerm
+	isleader = rf.role == Leader
+	return term, isleader
 }
 
 // save Raft's persistent state to stable storage,
@@ -160,17 +174,16 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
+	Term        int
+	CandidateId int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
-}
-
-// example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (3A, 3B).
+	Term        int
+	VoteGranted bool
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -200,9 +213,41 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
+
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
+}
+
+// example RequestVote RPC handler.
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	// Your code here (3A, 3B).
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+
+	if args.Term < rf.currentTerm {
+		LOG(rf.me, rf.currentTerm, DVote, "RequestVote: term %d < currentTerm %d, vote denied", args.Term, rf.currentTerm)
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.becomeFollowerLocked(args.Term)
+	}
+
+	if rf.votedFor != -1 {
+		LOG(rf.me, rf.currentTerm, DVote, "RequestVote: voted for %d, vote denied", rf.votedFor)
+		reply.VoteGranted = false
+		return
+	}
+
+	rf.votedFor = args.CandidateId
+	reply.VoteGranted = true
+	rf.resetElectionTimerLocked()
+	LOG(rf.me, rf.currentTerm, DVote, "RequestVote: voted for %d, vote granted", args.CandidateId)
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -246,11 +291,170 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) ticker() {
+func (rf *Raft) contextLostLocked(role Role, term int) bool {
+	return rf.role != role || rf.currentTerm != term
+}
+
+type AppendEntriesArgs struct {
+	Term     int
+	LeaderId int
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if args.Term < rf.currentTerm {
+		LOG(rf.me, rf.currentTerm, DLog, "AppendEntries: term %d < currentTerm %d, append entries denied", args.Term, rf.currentTerm)
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
+	LOG(rf.me, rf.currentTerm, DLog, "AppendEntries: term %d >= currentTerm %d, append entries granted", args.Term, rf.currentTerm)
+
+	rf.becomeFollowerLocked(args.Term)
+	reply.Term = args.Term
+	reply.Success = true
+	rf.resetElectionTimerLocked()
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func (rf *Raft) startReplication(term int) bool {
+	rf.mu.Lock()
+
+	defer rf.mu.Unlock()
+
+	if rf.contextLostLocked(Leader, term) {
+		LOG(rf.me, rf.currentTerm, DLog, "context lost, leader %d, term %d, stop replication", rf.me, term)
+		return false
+	}
+
+	replicateToPeer := func(peer int, args *AppendEntriesArgs) {
+		reply := &AppendEntriesReply{}
+		ok := rf.sendAppendEntries(peer, args, reply)
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+
+		if !ok {
+			LOG(rf.me, rf.currentTerm, DError, "failed to send append entries to peer %d", peer)
+		}
+
+		if reply.Term > rf.currentTerm {
+			rf.becomeFollowerLocked(reply.Term)
+			return
+		}
+	}
+
+	for peer := 0; peer < len(rf.peers); peer++ {
+		if peer == rf.me {
+			continue
+		}
+
+		args := &AppendEntriesArgs{
+			Term:     rf.currentTerm,
+			LeaderId: rf.me,
+		}
+
+		go replicateToPeer(peer, args)
+	}
+
+	return true
+}
+
+func (rf *Raft) replicationTicker(term int) {
+	for rf.killed() == false {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+
+		ok := rf.startReplication(term)
+
+		if !ok {
+			break
+		}
+
+		time.Sleep(replicationInterval)
+	}
+}
+
+func (rf *Raft) startElection(term int) {
+	vote := 0
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	askVoteFromPeer := func(peer int, args *RequestVoteArgs) {
+		reply := &RequestVoteReply{}
+		ok := rf.sendRequestVote(peer, args, reply)
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+
+		if !ok {
+			LOG(rf.me, rf.currentTerm, DError, "failed to send request vote to peer %d", peer)
+		}
+
+		if reply.Term > rf.currentTerm {
+			rf.becomeFollowerLocked(reply.Term)
+			return
+		}
+
+		if rf.contextLostLocked(Candidate, term) {
+			LOG(rf.me, rf.currentTerm, DVote, "context lost, candidate %d, term %d", rf.me, term)
+			return
+		}
+
+		if reply.VoteGranted {
+			vote++
+			if vote > len(rf.peers)/2 {
+				rf.becomeLeaderLocked()
+				go rf.replicationTicker(term)
+				return
+			}
+		}
+	}
+
+	if rf.contextLostLocked(Candidate, term) {
+		LOG(rf.me, rf.currentTerm, DVote, "context lost, candidate %d, term %d", rf.me, term)
+	}
+
+	for peer := 0; peer < len(rf.peers); peer++ {
+		if peer == rf.me {
+			vote++
+			continue
+		}
+
+		args := &RequestVoteArgs{
+			Term:        rf.currentTerm,
+			CandidateId: rf.me,
+		}
+
+		go askVoteFromPeer(peer, args)
+	}
+
+	rf.currentTerm = term
+}
+
+func (rf *Raft) electionTicker() {
 	for rf.killed() == false {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
+		rf.mu.Lock()
+
+		if rf.role != Leader && rf.isElectionTimeout() {
+			rf.becomeCandidateLocked()
+			go rf.startElection(rf.currentTerm + 1)
+		}
+
+		rf.mu.Unlock()
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
@@ -285,7 +489,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.ticker()
+	go rf.electionTicker()
 
 	return rf
 }
