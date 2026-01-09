@@ -94,7 +94,7 @@ func (rf *Raft) becomeCandidateLocked() {
 
 func (rf *Raft) becomeLeaderLocked() {
 	if rf.role != Candidate {
-		LOG(rf.me, rf.currentTerm, DError, "only candidate can become leader")
+		LOG(rf.me, rf.currentTerm, DError, "%s can't become leader, already %s", rf.role, rf.role)
 		return
 	}
 
@@ -106,12 +106,10 @@ func (rf *Raft) becomeLeaderLocked() {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	var term int
 	var isleader bool
-	// Your code here (3A).
 
 	term = rf.currentTerm
 	isleader = rf.role == Leader
