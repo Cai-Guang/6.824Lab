@@ -62,6 +62,11 @@ type Raft struct {
 
 	electionStart   time.Time
 	electionTimeout time.Duration
+
+	log         []LogEntry
+	nextIndex   []int // logical index
+	matchIndex  []int
+	commitIndex int
 }
 
 // save Raft's persistent state to stable storage,
@@ -159,6 +164,10 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) contextLostLocked(role Role, term int) bool {
+	return rf.role != role || rf.currentTerm != term
+}
+
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -180,6 +189,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = Follower
 	rf.currentTerm = 0
 	rf.votedFor = -1
+
+	rf.log = append(rf.log, LogEntry{Term: 0, CommandValid: false, Command: nil})
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
+	rf.commitIndex = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

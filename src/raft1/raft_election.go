@@ -9,6 +9,9 @@ type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
 	Term        int
 	CandidateId int
+
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
@@ -60,10 +63,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
 
 	if args.Term < rf.currentTerm {
-		LOG(rf.me, rf.currentTerm, DVote, "RequestVote: term %d < currentTerm %d, vote denied", args.Term, rf.currentTerm)
-		reply.VoteGranted = false
+		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Vote Rejected, Higher term, T%d>T%d", args.CandidateId, rf.currentTerm, args.Term)
 		return
 	}
 
@@ -71,16 +74,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.becomeFollowerLocked(args.Term)
 	}
 
-	if rf.votedFor != -1 {
-		LOG(rf.me, rf.currentTerm, DVote, "RequestVote: voted for %d, vote denied", rf.votedFor)
-		reply.VoteGranted = false
+	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Vote Rejected, Already voted for %d", args.CandidateId, rf.votedFor)
+		return
+	}
+
+	if rf.isMoreUpToDate(args.LastLogIndex, args.LastLogTerm) {
+		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Vote Rejected, S%d's log less up-to-date", args.CandidateId, rf.me)
 		return
 	}
 
 	rf.votedFor = args.CandidateId
 	reply.VoteGranted = true
 	rf.resetElectionTimerLocked()
-	LOG(rf.me, rf.currentTerm, DVote, "RequestVote: voted for %d, vote granted", args.CandidateId)
+	LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Vote Granted", args.CandidateId)
 }
 
 func (rf *Raft) startElection(term int) bool {
@@ -123,6 +130,9 @@ func (rf *Raft) startElection(term int) bool {
 		LOG(rf.me, rf.currentTerm, DVote, "context lost, candidate %d, term %d", rf.me, term)
 		return false
 	}
+
+	entriesLength := len(rf.log)
+	lastTerm, lastIndex := rf.log[entriesLength-1].Term, entriesLength-1
 	rf.mu.Unlock()
 
 	for peer := 0; peer < len(rf.peers); peer++ {
@@ -133,6 +143,9 @@ func (rf *Raft) startElection(term int) bool {
 		args := &RequestVoteArgs{
 			Term:        term,
 			CandidateId: rf.me,
+
+			LastLogIndex: lastIndex,
+			LastLogTerm:  lastTerm,
 		}
 
 		go askVoteFromPeer(peer, args)
@@ -144,8 +157,21 @@ func (rf *Raft) startElection(term int) bool {
 	return true
 }
 
+// compare last log of candidate and leader(self)
+func (rf *Raft) isMoreUpToDate(candidateIndex, candidateTerm int) bool {
+	entriesLength := len(rf.log)
+	lastTerm, lastIndex := rf.log[entriesLength-1].Term, entriesLength-1
+	LOG(rf.me, rf.currentTerm, DVote, "Compare last log: Me: [%d]T:%d, Candidate :[%d]T:%d", lastIndex, lastTerm, candidateIndex, candidateTerm)
+
+	if lastTerm != candidateTerm {
+		return lastTerm > candidateTerm
+	}
+
+	return lastIndex > candidateIndex
+}
+
 func (rf *Raft) electionTicker() {
-	for rf.killed() == false {
+	for !rf.killed() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.

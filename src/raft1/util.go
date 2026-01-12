@@ -10,7 +10,7 @@ const DError = "ERROR"
 const DVote = "VOTE"
 
 // Debugging
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {

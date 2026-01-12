@@ -6,7 +6,7 @@ func (rf *Raft) becomeFollowerLocked(term int) {
 		return
 	}
 
-	LOG(rf.me, rf.currentTerm, DLog, "%s became follower, T:%d->T%d", rf.role, rf.currentTerm, term)
+	LOG(rf.me, rf.currentTerm, DLog, "%s became follower, T:%d->T:%d", rf.role, rf.currentTerm, term)
 
 	rf.role = Follower
 	if term > rf.currentTerm {
@@ -21,7 +21,7 @@ func (rf *Raft) becomeCandidateLocked() {
 		return
 	}
 
-	LOG(rf.me, rf.currentTerm, DLog, "%s became candidate, T:%d->T%d", rf.role, rf.currentTerm, rf.currentTerm)
+	LOG(rf.me, rf.currentTerm, DLog, "%s became candidate, T:%d->T:%d", rf.role, rf.currentTerm, rf.currentTerm)
 
 	rf.currentTerm++
 	rf.votedFor = rf.me
@@ -34,13 +34,14 @@ func (rf *Raft) becomeLeaderLocked() {
 		return
 	}
 
-	LOG(rf.me, rf.currentTerm, DLog, "%s became leader, T:%d->T%d", rf.role, rf.currentTerm, rf.currentTerm)
+	LOG(rf.me, rf.currentTerm, DLog, "%s became leader, T:%d->T:%d", rf.role, rf.currentTerm, rf.currentTerm)
 
 	rf.role = Leader
-}
 
-func (rf *Raft) contextLostLocked(role Role, term int) bool {
-	return rf.role != role || rf.currentTerm != term
+	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = len(rf.log)
+		rf.matchIndex[i] = 0
+	}
 }
 
 // return currentTerm and whether this server
