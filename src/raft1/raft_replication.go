@@ -1,6 +1,9 @@
 package raft
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 type LogEntry struct {
 	Term         int
@@ -15,6 +18,7 @@ type AppendEntriesArgs struct {
 	PrevLogIndex int
 	PrevLogTerm  int
 	Entries      []LogEntry
+
 	LeaderCommit int
 }
 
@@ -26,6 +30,8 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	LOG(rf.me, rf.currentTerm, DLog, "AppendEntries: received log from leader [%d]T:%d, Len()=%d", args.LeaderId, args.PrevLogTerm, len(args.Entries))
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
@@ -50,6 +56,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
 	LOG(rf.me, rf.currentTerm, DLog, "AppendEntries: term %d >= currentTerm %d, append entries granted", args.Term, rf.currentTerm)
 	reply.Success = true
+
+	if args.LeaderCommit > rf.commitIndex {
+		LOG(rf.me, rf.currentTerm, DApply, "Follower update the commit index %d->%d", rf.commitIndex, args.LeaderCommit)
+		rf.commitIndex = args.LeaderCommit
+		if rf.commitIndex >= len(rf.log) {
+			rf.commitIndex = len(rf.log) - 1
+		}
+		rf.applyCond.Signal()
+	}
 
 	rf.resetElectionTimerLocked()
 }
@@ -88,9 +103,28 @@ func (rf *Raft) startReplication(term int) bool {
 			idx := rf.nextIndex[peer] - 1
 			term := rf.log[idx].Term
 
-			for idx > 0 && rf.log[idx].Term == term { // TODO : binary search
+			for idx > 0 && rf.log[idx].Term == term {
 				idx--
 			}
+			// TODO : binary search
+
+			// L := 0
+			// R := idx
+
+			// check := func(idx int) bool {
+			// 	return rf.log[idx].Term == term
+			// }
+
+			// for L+1 < R {
+			// 	mid := (L + R + 1) / 2
+			// 	if check(mid) {
+			// 		R = mid
+			// 	} else {
+			// 		L = mid
+			// 	}
+			// }
+
+			// idx = R
 
 			rf.nextIndex[peer] = idx + 1
 
@@ -101,6 +135,16 @@ func (rf *Raft) startReplication(term int) bool {
 
 		rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
 		rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+
+		majorityMatched := rf.getMajorityMatchedIndexLocked()
+
+		if majorityMatched > rf.commitIndex {
+			if rf.log[majorityMatched].Term == rf.currentTerm {
+				LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
+				rf.commitIndex = majorityMatched
+				rf.applyCond.Signal()
+			}
+		}
 
 		LOG(rf.me, rf.currentTerm, DLog, "replication successful, match index %d, next index %d, peer %d", rf.matchIndex[peer], rf.nextIndex[peer], peer)
 	}
@@ -130,6 +174,18 @@ func (rf *Raft) startReplication(term int) bool {
 	}
 
 	return true
+}
+
+func (rf *Raft) getMajorityMatchedIndexLocked() int {
+	// TODO : use priority queue
+	majority := (len(rf.peers) - 1) / 2
+	matched := make([]int, len(rf.peers))
+	for i := 0; i < len(rf.peers); i++ {
+		matched[i] = rf.matchIndex[i]
+	}
+	sort.Ints(matched)
+	LOG(rf.me, rf.currentTerm, DLog, "majority matched index %d", matched[majority])
+	return matched[majority]
 }
 
 func (rf *Raft) replicationTicker(term int) {

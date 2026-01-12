@@ -67,6 +67,10 @@ type Raft struct {
 	nextIndex   []int // logical index
 	matchIndex  []int
 	commitIndex int
+
+	lastApplied int
+	applyCond   *sync.Cond
+	applyCh     chan raftapi.ApplyMsg
 }
 
 // save Raft's persistent state to stable storage,
@@ -142,6 +146,26 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (3B).
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.role != Leader {
+		return index, term, false
+	}
+
+	index = len(rf.log)
+	term = rf.currentTerm
+	entry := LogEntry{Term: term, CommandValid: true, Command: command}
+
+	rf.log = append(rf.log, entry)
+
+	rf.matchIndex[rf.me] = index
+	rf.nextIndex[rf.me] = index + 1
+
+	LOG(rf.me, rf.currentTerm, DLog, "Leader %d, Term %d, Start command %v, Index %d", rf.me, rf.currentTerm, command, index)
+
+	// go rf.startReplication(term)
+
 	return index, term, isLeader
 }
 
@@ -195,11 +219,46 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(peers))
 	rf.commitIndex = 0
 
+	rf.lastApplied = 0
+	rf.applyCond = sync.NewCond(&rf.mu)
+	rf.applyCh = applyCh
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.electionTicker()
+	go rf.applyTicker()
 
 	return rf
+}
+
+func (rf *Raft) applyTicker() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		rf.applyCond.Wait()
+
+		lastAppliedIndex := rf.lastApplied
+		currentCommitIndex := rf.commitIndex
+
+		entries := make([]LogEntry, 0)
+
+		for i := lastAppliedIndex + 1; i <= currentCommitIndex; i++ {
+			entries = append(entries, rf.log[i])
+		}
+
+		rf.mu.Unlock()
+
+		for i, entry := range entries {
+			rf.applyCh <- raftapi.ApplyMsg{
+				CommandValid: entry.CommandValid,
+				Command:      entry.Command,
+				CommandIndex: lastAppliedIndex + i + 1,
+			}
+		}
+		rf.mu.Lock()
+		LOG(rf.me, rf.currentTerm, DApply, "applied entries for [%d, %d], len = %d", lastAppliedIndex+1, currentCommitIndex+1, len(entries))
+		rf.lastApplied = currentCommitIndex
+		rf.mu.Unlock()
+	}
 }

@@ -8,9 +8,10 @@ import (
 const DLog = "LOG"
 const DError = "ERROR"
 const DVote = "VOTE"
+const DApply = "APPLY"
 
 // Debugging
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {

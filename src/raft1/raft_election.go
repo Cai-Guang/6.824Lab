@@ -133,6 +133,7 @@ func (rf *Raft) startElection(term int) bool {
 
 	entriesLength := len(rf.log)
 	lastTerm, lastIndex := rf.log[entriesLength-1].Term, entriesLength-1
+
 	rf.mu.Unlock()
 
 	for peer := 0; peer < len(rf.peers); peer++ {
