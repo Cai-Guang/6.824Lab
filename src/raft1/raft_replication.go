@@ -106,15 +106,13 @@ func (rf *Raft) startReplication(term int) bool {
 			for idx > 0 && rf.log[idx].Term == term {
 				idx--
 			}
-			// TODO : binary search
 
+			// HIDDEN : binary search
 			// L := 0
 			// R := idx
-
 			// check := func(idx int) bool {
 			// 	return rf.log[idx].Term == term
 			// }
-
 			// for L+1 < R {
 			// 	mid := (L + R + 1) / 2
 			// 	if check(mid) {
@@ -123,7 +121,6 @@ func (rf *Raft) startReplication(term int) bool {
 			// 		L = mid
 			// 	}
 			// }
-
 			// idx = R
 
 			rf.nextIndex[peer] = idx + 1

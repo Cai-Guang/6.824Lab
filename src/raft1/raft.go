@@ -153,11 +153,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return index, term, false
 	}
 
-	index = len(rf.log)
 	term = rf.currentTerm
 	entry := LogEntry{Term: term, CommandValid: true, Command: command}
 
 	rf.log = append(rf.log, entry)
+	index = len(rf.log) - 1
 
 	rf.matchIndex[rf.me] = index
 	rf.nextIndex[rf.me] = index + 1
@@ -188,7 +188,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) contextLostLocked(role Role, term int) bool {
+func (rf *Raft) contextLostLocked(role Role, term int) bool { // expected role and term
 	return rf.role != role || rf.currentTerm != term
 }
 
