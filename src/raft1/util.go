@@ -9,6 +9,7 @@ const DLog = "LOG"
 const DError = "ERROR"
 const DVote = "VOTE"
 const DApply = "APPLY"
+const DPersist = "PERSIST"
 
 // Debugging
 const Debug = false

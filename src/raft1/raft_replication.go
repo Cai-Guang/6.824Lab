@@ -25,6 +25,9 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -65,6 +68,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.applyCond.Signal()
 	}
+
+	// if len(rf.log) <= args.PrevLogIndex {
+	// 	reply.ConflictIndex = len(rf.log)
+	// 	reply.ConflictTerm = rf.log[len(rf.log)-1].Term
+	// 	return
+	// }
+
+	// if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	// 	reply.ConflictIndex = args.PrevLogIndex
+	// 	reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+	// 	return
+	// }
 
 	rf.resetElectionTimerLocked()
 }

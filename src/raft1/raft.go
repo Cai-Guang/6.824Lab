@@ -80,6 +80,7 @@ type Raft struct {
 // second argument to persister.Save().
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
+/*
 func (rf *Raft) persist() {
 	// Your code here (3C).
 	// Example:
@@ -90,8 +91,9 @@ func (rf *Raft) persist() {
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
 }
-
+*/
 // restore previously persisted state.
+/*
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
@@ -110,6 +112,7 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.yyy = yyy
 	// }
 }
+*/
 
 // how many bytes in Raft's persisted log?
 func (rf *Raft) PersistBytes() int {
