@@ -24,7 +24,7 @@ type RequestVoteReply struct {
 }
 
 func (args *RequestVoteArgs) String() string {
-	return fmt.Sprintf("Candidate-%d T%d, Last:[%d]T%d", args.CandidateId, args.Term, args.LastLogIndex, args.LastLogTerm)
+	return fmt.Sprintf("Candidate-S%d T%d, Last:[%d]T%d", args.CandidateId, args.Term, args.LastLogIndex, args.LastLogTerm)
 }
 
 func (reply *RequestVoteReply) String() string {
@@ -111,7 +111,7 @@ func (rf *Raft) startElection(term int) bool {
 		defer rf.mu.Unlock()
 
 		if !ok {
-			LOG(rf.me, rf.currentTerm, DError, "failed to send request vote to peer %d", peer)
+			LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, Ask vote, Lost or error", peer)
 			return
 		}
 
@@ -123,7 +123,7 @@ func (rf *Raft) startElection(term int) bool {
 		}
 
 		if rf.contextLostLocked(Candidate, term) {
-			LOG(rf.me, rf.currentTerm, DVote, "context lost, candidate %d, term %d", rf.me, term)
+			LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Lost context, abort RequestVoteReply", peer)
 			return
 		}
 
@@ -139,8 +139,8 @@ func (rf *Raft) startElection(term int) bool {
 
 	rf.mu.Lock()
 	if rf.contextLostLocked(Candidate, term) {
+		LOG(rf.me, rf.currentTerm, DVote, "Lost Candidate[T%d] to %s[T%d], abort RequestVote", term, rf.role, rf.currentTerm)
 		rf.mu.Unlock()
-		LOG(rf.me, rf.currentTerm, DVote, "context lost, candidate %d, term %d", rf.me, term)
 		return false
 	}
 
