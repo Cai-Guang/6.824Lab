@@ -1,8 +1,14 @@
 package raft
 
 import (
+	"fmt"
 	"sort"
 	"time"
+)
+
+const (
+	EmptyTerm     = 0
+	EmptyLogIndex = 0
 )
 
 type LogEntry struct {
@@ -30,21 +36,37 @@ type AppendEntriesReply struct {
 	ConflictTerm  int
 }
 
+func (args *AppendEntriesArgs) String() string {
+	return fmt.Sprintf("Leader-%d T%d, Prev:[%d]T%d, Entries:(%d, %d], Commit:%d", args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.PrevLogIndex, args.PrevLogIndex+len(args.Entries), args.LeaderCommit)
+}
+
+func (reply *AppendEntriesReply) String() string {
+	return fmt.Sprintf("T%d, Success:%t, Conflict [%d]T%d", reply.Term, reply.Success, reply.ConflictIndex, reply.ConflictTerm)
+}
+
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	LOG(rf.me, rf.currentTerm, DLog, "AppendEntries: received log from leader [%d]T:%d, Len()=%d", args.LeaderId, args.PrevLogTerm, len(args.Entries))
+	LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, AppendEntries, Prev=[%d]T%d, Commit: %d", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
 
 	if args.Term < rf.currentTerm {
-		LOG(rf.me, rf.currentTerm, DLog, "AppendEntries: term %d < currentTerm %d, append entries denied", args.Term, rf.currentTerm)
+		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Higher term, T%d<T%d", args.LeaderId, args.Term, rf.currentTerm)
 		return
 	}
 
 	rf.becomeFollowerLocked(args.Term)
+
+	defer func() {
+		rf.resetElectionTimerLocked()
+		if !reply.Success {
+			LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Follower Conflict: [%d]T%d", args.LeaderId, reply.ConflictIndex, reply.ConflictTerm)
+			LOG(rf.me, rf.currentTerm, DDebug, "Follower log=%v", rf.LogString())
+		}
+	}()
 
 	if len(rf.log) <= args.PrevLogIndex {
 		LOG(rf.me, rf.currentTerm, DLog, "AppendEntries: Reject Log, PrevLogIndex %d out of range", args.PrevLogIndex)
@@ -57,6 +79,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	rf.persistLocked()
 	LOG(rf.me, rf.currentTerm, DLog, "AppendEntries: term %d >= currentTerm %d, append entries granted", args.Term, rf.currentTerm)
 	reply.Success = true
 
@@ -69,19 +92,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.applyCond.Signal()
 	}
 
-	// if len(rf.log) <= args.PrevLogIndex {
-	// 	reply.ConflictIndex = len(rf.log)
-	// 	reply.ConflictTerm = rf.log[len(rf.log)-1].Term
-	// 	return
-	// }
+	if len(rf.log) <= args.PrevLogIndex {
+		reply.ConflictIndex = len(rf.log)
+		reply.ConflictTerm = EmptyTerm
+		return
+	}
 
-	// if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-	// 	reply.ConflictIndex = args.PrevLogIndex
-	// 	reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
-	// 	return
-	// }
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+		reply.ConflictIndex = rf.findFirstIndexWithTerm(args.PrevLogTerm)
+		return
+	}
 
-	rf.resetElectionTimerLocked()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -109,39 +131,40 @@ func (rf *Raft) startReplication(term int) bool {
 			LOG(rf.me, rf.currentTerm, DError, "failed to send append entries to peer %d", peer)
 		}
 
+		LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, AppendEntries, Reply:%s", peer, reply.String())
+
 		if reply.Term > rf.currentTerm {
 			rf.becomeFollowerLocked(reply.Term)
 			return
 		}
 
 		if !reply.Success {
-			idx := rf.nextIndex[peer] - 1
-			term := rf.log[idx].Term
-
-			for idx > 0 && rf.log[idx].Term == term {
-				idx--
+			prevNextIndex := rf.nextIndex[peer]
+			var targetIndex int
+			if reply.ConflictTerm == EmptyTerm {
+				targetIndex = reply.ConflictIndex
+			} else {
+				firstTermIndex := rf.findFirstIndexWithTerm(reply.ConflictTerm)
+				if firstTermIndex == EmptyLogIndex {
+					targetIndex = reply.ConflictIndex
+				} else {
+					targetIndex = firstTermIndex
+				}
 			}
 
-			// HIDDEN : binary search
-			// L := 0
-			// R := idx
-			// check := func(idx int) bool {
-			// 	return rf.log[idx].Term == term
-			// }
-			// for L+1 < R {
-			// 	mid := (L + R + 1) / 2
-			// 	if check(mid) {
-			// 		R = mid
-			// 	} else {
-			// 		L = mid
-			// 	}
-			// }
-			// idx = R
+			if targetIndex < 1 {
+				targetIndex = 1
+			}
 
-			rf.nextIndex[peer] = idx + 1
+			if targetIndex < prevNextIndex {
+				rf.nextIndex[peer] = targetIndex
+			}
 
-			LOG(rf.me, rf.currentTerm, DLog, "replication failed, next index %d, peer %d", idx+1, peer)
+			nextPrevIndex := rf.nextIndex[peer] - 1
+			nextPrevTerm := rf.log[nextPrevIndex].Term
 
+			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at Prev=[%d]T%d, Try next Prev=[%d]T%d", peer, args.PrevLogIndex, args.PrevLogTerm, nextPrevIndex, nextPrevTerm)
+			LOG(rf.me, rf.currentTerm, DDebug, "Leader log: %s", rf.LogString())
 			return
 		}
 
@@ -171,17 +194,19 @@ func (rf *Raft) startReplication(term int) bool {
 		prevIdx := rf.nextIndex[peer] - 1
 		prevTerm := rf.log[prevIdx].Term
 
+		copyEntries := make([]LogEntry, len(rf.log[prevIdx+1:]))
+		copy(copyEntries, rf.log[prevIdx+1:])
+
 		args := &AppendEntriesArgs{
 			Term:     rf.currentTerm,
 			LeaderId: rf.me,
 
 			PrevLogIndex: prevIdx,
 			PrevLogTerm:  prevTerm,
-			Entries:      rf.log[prevIdx+1:],
+			Entries:      copyEntries,
 			LeaderCommit: rf.commitIndex,
 		}
-
-		LOG(rf.me, rf.currentTerm, DLog, "start replication to peer %d, prev index %d, prev term %d, entriesLength %d", peer, prevIdx, prevTerm, len(args.Entries))
+		LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, AppendEntries, Args:%s", peer, args.String())
 		go replicateToPeer(peer, args)
 	}
 
@@ -198,6 +223,29 @@ func (rf *Raft) getMajorityMatchedIndexLocked() int {
 	sort.Ints(matched)
 	LOG(rf.me, rf.currentTerm, DLog, "majority matched index %d", matched[majority])
 	return matched[majority]
+}
+
+func (rf *Raft) findFirstIndexWithTerm(term int) int {
+	// L := LastIndex of LastTerm
+	// R := FirstIndex of ThisTerm
+	// L always equals to R - 1 when loop ends
+	L := 0
+	R := len(rf.log)
+	check := func(idx int) bool {
+		return rf.log[idx].Term >= term
+	}
+	for L+1 < R {
+		mid := (L + R + 1) / 2
+		if check(mid) {
+			R = mid
+		} else {
+			L = mid
+		}
+	}
+	if R >= len(rf.log) || rf.log[R].Term != term {
+		return EmptyLogIndex
+	}
+	return R
 }
 
 func (rf *Raft) replicationTicker(term int) {

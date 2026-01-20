@@ -6,6 +6,8 @@ func (rf *Raft) becomeFollowerLocked(term int) {
 		return
 	}
 
+	shouldPersist := term != rf.currentTerm
+
 	LOG(rf.me, rf.currentTerm, DLog, "%s became follower, T:%d->T:%d", rf.role, rf.currentTerm, term)
 
 	rf.role = Follower
@@ -13,6 +15,10 @@ func (rf *Raft) becomeFollowerLocked(term int) {
 		rf.votedFor = -1
 	}
 	rf.currentTerm = term
+
+	if shouldPersist {
+		rf.persistLocked()
+	}
 }
 
 func (rf *Raft) becomeCandidateLocked() {
@@ -26,6 +32,8 @@ func (rf *Raft) becomeCandidateLocked() {
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.role = Candidate
+
+	rf.persistLocked()
 }
 
 func (rf *Raft) becomeLeaderLocked() {

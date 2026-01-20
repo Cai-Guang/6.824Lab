@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"math/rand"
 	"time"
 )
@@ -20,6 +21,14 @@ type RequestVoteReply struct {
 	// Your data here (3A).
 	Term        int
 	VoteGranted bool
+}
+
+func (args *RequestVoteArgs) String() string {
+	return fmt.Sprintf("Candidate-%d T%d, Last:[%d]T%d", args.CandidateId, args.Term, args.LastLogIndex, args.LastLogTerm)
+}
+
+func (reply *RequestVoteReply) String() string {
+	return fmt.Sprintf("T%d, VoteGranted: %t", reply.Term, reply.VoteGranted)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -61,6 +70,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, VoteAsked, Args:%s", args.CandidateId, args.String())
 
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
@@ -86,6 +96,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	rf.votedFor = args.CandidateId
 	reply.VoteGranted = true
+	rf.persistLocked()
 	rf.resetElectionTimerLocked()
 	LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Vote Granted", args.CandidateId)
 }
@@ -103,6 +114,8 @@ func (rf *Raft) startElection(term int) bool {
 			LOG(rf.me, rf.currentTerm, DError, "failed to send request vote to peer %d", peer)
 			return
 		}
+
+		LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, AskVote, Reply:%s", peer, reply.String())
 
 		if reply.Term > rf.currentTerm {
 			rf.becomeFollowerLocked(reply.Term)
@@ -149,6 +162,7 @@ func (rf *Raft) startElection(term int) bool {
 			LastLogTerm:  lastTerm,
 		}
 
+		LOG(rf.me, term, DDebug, "-> S%d, AskVote, Args:%s", peer, args.String())
 		go askVoteFromPeer(peer, args)
 	}
 

@@ -8,6 +8,7 @@ package raft
 
 import (
 	//	"bytes"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -71,6 +72,24 @@ type Raft struct {
 	lastApplied int
 	applyCond   *sync.Cond
 	applyCh     chan raftapi.ApplyMsg
+}
+
+func (rf *Raft) LogString() string {
+	var logs string
+	prevTerm := rf.log[0].Term
+	prevStart := 0
+
+	for i := 0; i <= len(rf.log); i++ {
+		if i == len(rf.log) || rf.log[i].Term != prevTerm {
+			logs += fmt.Sprintf("[%d, %d]T%d, ", prevStart, i - 1, prevTerm)
+			if i < len(rf.log) {
+				prevTerm = rf.log[i].Term
+				prevStart = i
+			}
+		}
+	}
+
+	return logs
 }
 
 // save Raft's persistent state to stable storage,
@@ -168,6 +187,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	LOG(rf.me, rf.currentTerm, DLog, "Leader %d, Term %d, Start command %v, Index %d", rf.me, rf.currentTerm, command, index)
 
 	// go rf.startReplication(term)
+
+	rf.persistLocked()
 
 	return index, term, isLeader
 }
